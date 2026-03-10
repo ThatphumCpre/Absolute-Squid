@@ -1,4 +1,5 @@
 use clap::Parser;
+use colored::*;
 use inquire::Select;
 use std::collections::HashMap;
 use std::fmt;
@@ -38,9 +39,9 @@ enum GroupState {
 impl fmt::Display for GroupState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            GroupState::On => write!(f, "[ON]"),
-            GroupState::Off => write!(f, "[OFF]"),
-            GroupState::Semi => write!(f, "[SEMI]"),
+            GroupState::On => write!(f, "{}", "🟢 [ON]".green().bold()),
+            GroupState::Off => write!(f, "{}", "🔴 [OFF]".red().bold()),
+            GroupState::Semi => write!(f, "{}", "🟡 [SEMI]".yellow().bold()),
         }
     }
 }
@@ -58,15 +59,15 @@ struct ManifestFile {
 impl fmt::Display for ManifestFile {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let env_str = match self.env {
-            Env::Staging => "[STG]",
-            Env::Prod => "[PRD]",
-            Env::Unknown => "[???]",
+            Env::Staging => "🧪 [STG]".cyan(),
+            Env::Prod => "🚀 [PRD]".magenta(),
+            Env::Unknown => "❓ [???]".truecolor(100, 100, 100),
         };
         let kind_str = match self.kind {
-            Kind::Application => "App",
-            Kind::AppProject => "Proj",
-            Kind::Autoscale => "Auto",
-            Kind::Unknown => "???",
+            Kind::Application => "📦 App".blue(),
+            Kind::AppProject => "📁 Proj".yellow(),
+            Kind::Autoscale => "📈 Auto".green(),
+            Kind::Unknown => "❓ ???".truecolor(100, 100, 100),
         };
         let file_name = self.path.file_name().unwrap_or_default().to_string_lossy();
         write!(f, "{} {} - {}", env_str, kind_str, file_name)
@@ -84,13 +85,13 @@ struct ManifestGroup {
 impl fmt::Display for ManifestGroup {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let env_str = match self.env {
-            Env::Staging => "[STG]",
-            Env::Prod => "[PRD]",
-            Env::Unknown => "[???]",
+            Env::Staging => "🧪 [STG]".cyan(),
+            Env::Prod => "🚀 [PRD]".magenta(),
+            Env::Unknown => "❓ [???]".truecolor(100, 100, 100),
         };
         let file_count = self.files.len();
         let s = if file_count == 1 { "" } else { "s" };
-        write!(f, "{} {} ({} file{})", env_str, self.name, file_count, s)
+        write!(f, "{} {} ({} file{})", env_str, self.name.bold(), file_count, s)
     }
 }
 
@@ -249,8 +250,9 @@ fn main() {
 
     if manifests.is_empty() {
         println!(
-            "No ArgoCD Application or AppProject manifests found in {}",
-            args.path.display()
+            "{} No ArgoCD Application or AppProject manifests found in {}",
+            "⚠️".yellow(),
+            args.path.display().to_string().cyan()
         );
         return;
     }
@@ -322,12 +324,14 @@ fn main() {
             // A group is considered ON if ALL its manifests are active.
             // If some are active but not all, it is SEMI.
             // If all are inactive, it is OFF.
-            let any_on = g.files.iter().any(|m| m.is_active);
+            let app_any_on = g.files.iter().any(|m| {
+                (m.kind == Kind::Application || m.kind == Kind::AppProject) && m.is_active
+            });
             let all_on = g.files.iter().all(|m| m.is_active);
 
             g.state = if all_on {
                 GroupState::On
-            } else if any_on {
+            } else if app_any_on {
                 GroupState::Semi
             } else {
                 GroupState::Off
@@ -352,9 +356,9 @@ fn main() {
     impl fmt::Display for EnvOption {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             let env_str = match self.env {
-                Env::Staging => "Staging",
-                Env::Prod => "Production",
-                Env::Unknown => "Unknown",
+                Env::Staging => "🧪 Staging".cyan().bold(),
+                Env::Prod => "🚀 Production".magenta().bold(),
+                Env::Unknown => "❓ Unknown".truecolor(100, 100, 100),
             };
             let s = if self.group_count == 1 { "" } else { "s" };
             write!(f, "{} Environment ({} app{})", env_str, self.group_count, s)
@@ -395,7 +399,30 @@ fn main() {
                     // Recompute string representations to show fresh state
                     let mut options = Vec::new();
                     for g in &env_groups {
-                        options.push(format!("{} - {}", g.state, g.name));
+                        let mut display_str = format!("{} - {}", g.state, g.name);
+                        if g.state == GroupState::Semi {
+                            let mut active = Vec::new();
+                            let mut inactive = Vec::new();
+                            for f in &g.files {
+                                let kind_str = match f.kind {
+                                    Kind::Application | Kind::AppProject => "app",
+                                    Kind::Autoscale => "auto",
+                                    Kind::Unknown => "other",
+                                };
+                                if f.is_active {
+                                    if !active.contains(&kind_str) {
+                                        active.push(kind_str);
+                                    }
+                                } else {
+                                    if !inactive.contains(&kind_str) {
+                                        inactive.push(kind_str);
+                                    }
+                                }
+                            }
+                            let detail = format!(" (on: {}, off: {})", active.join(", "), inactive.join(", "));
+                            display_str.push_str(&format!("{}", detail.truecolor(100, 100, 100)));
+                        }
+                        options.push(display_str);
                     }
                     options.push("== Exit / Done ==".to_string());
 
@@ -404,7 +431,7 @@ fn main() {
                     match app_ans {
                         Ok(selected_str) => {
                             if selected_str == "== Exit / Done ==" {
-                                println!("Finished managing {}.", selected_env_opt);
+                                println!("{} Finished managing {}.", "✨".cyan(), selected_env_opt);
                                 break;
                             }
 
@@ -427,8 +454,8 @@ fn main() {
                             match action_ans {
                                 Ok(action) => {
                                     if action == "Cancel" {
-                                        println!("Operation canceled.");
-                                        println!("--------------------------------------------------");
+                                        println!("{} Operation canceled.", "🚫".red());
+                                        println!("{}", "--------------------------------------------------".truecolor(100, 100, 100));
                                         continue;
                                     }
 
@@ -453,29 +480,31 @@ fn main() {
                                             let new_lines = toggle_lines(&manifest.lines, target_state);
                                             let new_content = new_lines.join("\n") + "\n";
                                             if let Err(e) = fs::write(&manifest.path, new_content) {
-                                                eprintln!("Failed to write to {}: {}", manifest.path.display(), e);
+                                                eprintln!("{} Failed to write to {}: {}", "❌".red().bold(), manifest.path.display().to_string().cyan(), e);
                                             } else {
-                                                let status = if target_state { "Turned ON" } else { "Turned OFF" };
-                                                println!("{} {}", status, manifest.path.display());
+                                                let status = if target_state { "Turned ON".green() } else { "Turned OFF".red() };
+                                                println!("{} {} {}", "✅".green(), status, manifest.path.display().to_string().cyan());
                                                 manifest.is_active = target_state;
                                                 manifest.lines = new_lines;
                                             }
                                         }
                                     }
 
-                                    let any_on = selected_group.files.iter().any(|m| m.is_active);
+                                    let app_any_on = selected_group.files.iter().any(|m| {
+                                        (m.kind == Kind::Application || m.kind == Kind::AppProject) && m.is_active
+                                    });
                                     let all_on = selected_group.files.iter().all(|m| m.is_active);
 
                                     selected_group.state = if all_on {
                                         GroupState::On
-                                    } else if any_on {
+                                    } else if app_any_on {
                                         GroupState::Semi
                                     } else {
                                         GroupState::Off
                                     };
 
-                                    println!("Done toggling {}!", selected_group.name);
-                                    println!("--------------------------------------------------");
+                                    println!("{} Done toggling {}!", "🎉".green(), selected_group.name.bold());
+                                    println!("{}", "--------------------------------------------------".truecolor(100, 100, 100));
                                 }
                                 Err(_) => {
                                     println!("Error or canceled.");

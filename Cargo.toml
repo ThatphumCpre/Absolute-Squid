@@ -7,3 +7,4 @@ edition = "2024"
 clap = { version = "4.5.60", features = ["derive"] }
 inquire = "0.9.4"
 walkdir = "2.5.0"
+colored = "2.1.0"
