@@ -16,38 +16,54 @@ When an application is turned off, the CLI automatically comments out all lines 
 
 Ensure you have [Rust and Cargo](https://rustup.rs/) installed.
 
-Then, clone this repository and build the project:
+Then, clone this repository:
 
 ```bash
 git clone <your-repo-url> absolute-squid
 cd absolute-squid
-cargo build --release
 ```
 
-The executable will be available at `target/release/absolute-squid`.
+### Quick Install (Recommended)
+
+The easiest way to install the tool globally is using the provided `install.sh` script or the `Makefile`:
+
+```bash
+./install.sh
+# OR
+make install
+```
+
+This will automatically build and install the `absolute-squid` binary to your `~/.cargo/bin` directory, making it available globally on your system.
+
+### Manual Install
+
+Alternatively, you can install it manually using Cargo:
+
+```bash
+cargo install --path .
+```
 
 ## Usage
 
-You can run the CLI directly using Cargo or the built executable.
-
-### Using Cargo
+Once installed globally, you can run the CLI directly from anywhere.
 
 To scan the current directory:
 ```bash
-cargo run -- .
+absolute-squid .
 ```
 
 To scan a specific directory:
 ```bash
-cargo run -- /path/to/argocd/manifests
+absolute-squid /path/to/argocd/manifests
 ```
 
-### Using the Binary
+### Using Cargo (without installing)
 
-Once built, you can move the binary to your `PATH` and run it from anywhere.
+If you prefer not to install the binary globally, you can run it via Cargo from the project root:
 
 ```bash
-absolute-squid .
+cargo run -- .
+cargo run -- /path/to/argocd/manifests
 ```
 
 ### Interactive Menu
