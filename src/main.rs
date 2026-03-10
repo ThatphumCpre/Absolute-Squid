@@ -201,15 +201,15 @@ fn main() {
     // Sort groups for stable output
     groups.sort_by(|a, b| a.name.cmp(&b.name));
 
-    // pre-select indices for active groups
+    // pre-select indices for OFF groups
     let mut default_selection = Vec::new();
     for (i, g) in groups.iter().enumerate() {
-        if g.is_active {
+        if !g.is_active {
             default_selection.push(i);
         }
     }
     
-    let ans = MultiSelect::new("Turn on/off Staging & Prod deployments:", groups.clone())
+    let ans = MultiSelect::new("Select deployments to turn OFF (checked = OFF, unchecked = ON):", groups.clone())
         .with_default(&default_selection)
         .prompt();
 
@@ -218,7 +218,8 @@ fn main() {
             let selected_names: Vec<_> = selections.iter().map(|s| &s.name).collect();
             
             for group in &groups {
-                let should_be_active = selected_names.contains(&&group.name);
+                let should_be_off = selected_names.contains(&&group.name);
+                let should_be_active = !should_be_off;
                 
                 // if we toggle the group on, turn ALL inner manifests on
                 // if we toggle the group off, turn ALL inner manifests off
