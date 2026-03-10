@@ -12,7 +12,7 @@ struct Args {
     path: PathBuf,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Env {
     Staging,
     Prod,
@@ -198,41 +198,81 @@ fn main() {
         g
     }).collect();
 
-    // Sort groups for stable output
-    groups.sort_by(|a, b| a.name.cmp(&b.name));
+    // Group by Environment
+    let mut env_map: HashMap<Env, Vec<ManifestGroup>> = HashMap::new();
+    for group in groups {
+        env_map.entry(group.env.clone()).or_default().push(group);
+    }
 
-    // pre-select indices for OFF groups
+    #[derive(Clone, Debug, PartialEq)]
+    struct EnvOption {
+        env: Env,
+        is_all_active: bool,
+        group_count: usize,
+    }
+
+    impl fmt::Display for EnvOption {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            let env_str = match self.env {
+                Env::Staging => "Staging",
+                Env::Prod => "Production",
+                Env::Unknown => "Unknown",
+            };
+            let s = if self.group_count == 1 { "" } else { "s" };
+            write!(f, "{} Environment ({} app{})", env_str, self.group_count, s)
+        }
+    }
+
+    let mut env_options = Vec::new();
+    for (env, env_groups) in &env_map {
+        let is_all_active = env_groups.iter().all(|g| g.is_active);
+        env_options.push(EnvOption {
+            env: env.clone(),
+            is_all_active,
+            group_count: env_groups.len(),
+        });
+    }
+
+    // Sort options to have Staging, Prod, Unknown order predictably
+    env_options.sort_by_key(|opt| match opt.env {
+        Env::Staging => 1,
+        Env::Prod => 2,
+        Env::Unknown => 3,
+    });
+
+    // pre-select indices for OFF environments
     let mut default_selection = Vec::new();
-    for (i, g) in groups.iter().enumerate() {
-        if !g.is_active {
+    for (i, opt) in env_options.iter().enumerate() {
+        if !opt.is_all_active {
             default_selection.push(i);
         }
     }
     
-    let ans = MultiSelect::new("Select deployments to turn OFF (checked = OFF, unchecked = ON):", groups.clone())
+    let ans = MultiSelect::new("Select environments to turn OFF (checked = OFF, unchecked = ON):", env_options.clone())
         .with_default(&default_selection)
         .prompt();
 
     match ans {
         Ok(selections) => {
-            let selected_names: Vec<_> = selections.iter().map(|s| &s.name).collect();
+            let selected_envs: Vec<_> = selections.iter().map(|s| &s.env).collect();
             
-            for group in &groups {
-                let should_be_off = selected_names.contains(&&group.name);
+            for (env, env_groups) in &env_map {
+                let should_be_off = selected_envs.contains(&env);
                 let should_be_active = !should_be_off;
                 
-                // if we toggle the group on, turn ALL inner manifests on
-                // if we toggle the group off, turn ALL inner manifests off
-                for manifest in &group.files {
-                    if should_be_active != manifest.is_active || group.is_active != should_be_active {
-                        let new_lines = toggle_lines(&manifest.lines, should_be_active);
-                        let new_content = new_lines.join("\n") + "\n";
-                        
-                        if let Err(e) = fs::write(&manifest.path, new_content) {
-                            eprintln!("Failed to write to {}: {}", manifest.path.display(), e);
-                        } else {
-                            let status = if should_be_active { "Turned ON" } else { "Turned OFF" };
-                            println!("{} {}", status, manifest.path.display());
+                for group in env_groups {
+                    for manifest in &group.files {
+                        // We toggle if the manifest state doesn't match the desired env state
+                        if should_be_active != manifest.is_active {
+                            let new_lines = toggle_lines(&manifest.lines, should_be_active);
+                            let new_content = new_lines.join("\n") + "\n";
+                            
+                            if let Err(e) = fs::write(&manifest.path, new_content) {
+                                eprintln!("Failed to write to {}: {}", manifest.path.display(), e);
+                            } else {
+                                let status = if should_be_active { "Turned ON" } else { "Turned OFF" };
+                                println!("{} {}", status, manifest.path.display());
+                            }
                         }
                     }
                 }
