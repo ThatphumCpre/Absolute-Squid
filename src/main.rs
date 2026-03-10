@@ -80,9 +80,9 @@ fn process_file(path: &std::path::Path) -> Option<ManifestFile> {
         Ok(c) => c,
         Err(_) => return None,
     };
-    
+
     let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
-    
+
     let mut kind = Kind::Unknown;
     let mut is_active = false;
     let mut is_argo = false;
@@ -90,7 +90,7 @@ fn process_file(path: &std::path::Path) -> Option<ManifestFile> {
     for line in &lines {
         let trimmed = line.trim();
         let un_commented = trimmed.trim_start_matches('#').trim_start_matches(' ');
-        
+
         if un_commented.starts_with("kind: Application") {
             kind = Kind::Application;
             is_argo = true;
@@ -110,17 +110,55 @@ fn process_file(path: &std::path::Path) -> Option<ManifestFile> {
         return None;
     }
 
-    // Determine environment based on filename or content
-    let filename_lower = path.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
-    let content_lower = content.to_lowercase();
-    
-    let env = if filename_lower.contains("stg") || filename_lower.contains("staging") || content_lower.contains("staging") || content_lower.contains("stg") {
-        Env::Staging
-    } else if filename_lower.contains("prod") || filename_lower.contains("production") || content_lower.contains("production") || content_lower.contains("prod") {
-        Env::Prod
-    } else {
-        Env::Unknown
-    };
+    // Determine environment based on the path structure first
+    // E.g. /envs/staging/ or /tequila-workloads/staging/
+    let mut env = Env::Unknown;
+    let path_str_lower = path.to_string_lossy().to_lowercase();
+
+    // We split path components to specifically look for 'staging', 'stg', 'production', 'prod' directories
+    // We check from the end of the path backwards (closest folder rules)
+    let components: Vec<_> = path.components().collect();
+    for comp in components.iter().rev() {
+        if let std::path::Component::Normal(os_str) = comp {
+            let s = os_str.to_string_lossy().to_lowercase();
+            if s == "staging" || s == "stg" {
+                env = Env::Staging;
+                break;
+            } else if s == "production"
+                || s == "prod"
+                || s.starts_with("prod-")
+                || s.starts_with("production-")
+            {
+                // adding prod-v1-32 heuristic based on user input
+                env = Env::Prod;
+                break;
+            }
+        }
+    }
+
+    // Fallback logic
+    if env == Env::Unknown {
+        let filename_lower = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_lowercase();
+        let content_lower = content.to_lowercase();
+
+        if filename_lower.contains("stg")
+            || filename_lower.contains("staging")
+            || content_lower.contains("staging")
+            || content_lower.contains("stg")
+        {
+            env = Env::Staging;
+        } else if filename_lower.contains("prod")
+            || filename_lower.contains("production")
+            || content_lower.contains("production")
+            || content_lower.contains("prod")
+        {
+            env = Env::Prod;
+        }
+    }
 
     Some(ManifestFile {
         path: path.to_path_buf(),
@@ -132,30 +170,33 @@ fn process_file(path: &std::path::Path) -> Option<ManifestFile> {
 }
 
 fn toggle_lines(lines: &[String], activate: bool) -> Vec<String> {
-    lines.iter().map(|line| {
-        if activate {
-            // activate: remove leading `# ` or `#`
-            if line.starts_with("# ") {
-                line[2..].to_string()
-            } else if line.starts_with('#') {
-                line[1..].to_string()
+    lines
+        .iter()
+        .map(|line| {
+            if activate {
+                // activate: remove leading `# ` or `#`
+                if line.starts_with("# ") {
+                    line[2..].to_string()
+                } else if line.starts_with('#') {
+                    line[1..].to_string()
+                } else {
+                    line.clone()
+                }
             } else {
-                line.clone()
+                // deactivate: add leading `# ` if not empty or already commented
+                if line.trim().is_empty() || line.starts_with('#') {
+                    line.clone()
+                } else {
+                    format!("# {}", line)
+                }
             }
-        } else {
-            // deactivate: add leading `# ` if not empty or already commented
-            if line.trim().is_empty() || line.starts_with('#') {
-                line.clone()
-            } else {
-                format!("# {}", line)
-            }
-        }
-    }).collect()
+        })
+        .collect()
 }
 
 fn main() {
     let args = Args::parse();
-    
+
     let mut manifests = Vec::new();
 
     for entry in WalkDir::new(&args.path).into_iter().filter_map(|e| e.ok()) {
@@ -172,7 +213,10 @@ fn main() {
     }
 
     if manifests.is_empty() {
-        println!("No ArgoCD Application or AppProject manifests found in {}", args.path.display());
+        println!(
+            "No ArgoCD Application or AppProject manifests found in {}",
+            args.path.display()
+        );
         return;
     }
 
@@ -180,23 +224,33 @@ fn main() {
     let mut groups_map: HashMap<String, ManifestGroup> = HashMap::new();
 
     for manifest in manifests {
-        let stem = manifest.path.file_stem().unwrap_or_default().to_string_lossy().to_string();
-        let entry = groups_map.entry(stem.clone()).or_insert_with(|| ManifestGroup {
-            name: stem,
-            env: manifest.env.clone(),
-            is_active: true, // we'll update this
-            files: Vec::new(),
-        });
-        
+        let stem = manifest
+            .path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let entry = groups_map
+            .entry(stem.clone())
+            .or_insert_with(|| ManifestGroup {
+                name: stem,
+                env: manifest.env.clone(),
+                is_active: true, // we'll update this
+                files: Vec::new(),
+            });
+
         entry.files.push(manifest);
     }
 
-    let mut groups: Vec<ManifestGroup> = groups_map.into_values().map(|mut g| {
-        // A group is considered active only if ALL its manifests are active.
-        // If some are off, we treat the group as off.
-        g.is_active = g.files.iter().all(|m| m.is_active);
-        g
-    }).collect();
+    let mut groups: Vec<ManifestGroup> = groups_map
+        .into_values()
+        .map(|mut g| {
+            // A group is considered active only if ALL its manifests are active.
+            // If some are off, we treat the group as off.
+            g.is_active = g.files.iter().all(|m| m.is_active);
+            g
+        })
+        .collect();
 
     // Group by Environment
     let mut env_map: HashMap<Env, Vec<ManifestGroup>> = HashMap::new();
@@ -240,7 +294,11 @@ fn main() {
         Env::Unknown => 3,
     });
 
-    let env_ans = Select::new("Which environment do you want to manage?", env_options.clone()).prompt();
+    let env_ans = Select::new(
+        "Which environment do you want to manage?",
+        env_options.clone(),
+    )
+    .prompt();
 
     match env_ans {
         Ok(selected_env_opt) => {
@@ -263,20 +321,30 @@ fn main() {
                 match app_ans {
                     Ok(selections) => {
                         let selected_names: Vec<_> = selections.iter().map(|s| &s.name).collect();
-                        
+
                         for group in env_groups {
                             let should_be_off = selected_names.contains(&&group.name);
                             let should_be_active = !should_be_off;
-                            
+
                             for manifest in &group.files {
-                                if should_be_active != manifest.is_active || group.is_active != should_be_active {
+                                if should_be_active != manifest.is_active
+                                    || group.is_active != should_be_active
+                                {
                                     let new_lines = toggle_lines(&manifest.lines, should_be_active);
                                     let new_content = new_lines.join("\n") + "\n";
-                                    
+
                                     if let Err(e) = fs::write(&manifest.path, new_content) {
-                                        eprintln!("Failed to write to {}: {}", manifest.path.display(), e);
+                                        eprintln!(
+                                            "Failed to write to {}: {}",
+                                            manifest.path.display(),
+                                            e
+                                        );
                                     } else {
-                                        let status = if should_be_active { "Turned ON" } else { "Turned OFF" };
+                                        let status = if should_be_active {
+                                            "Turned ON"
+                                        } else {
+                                            "Turned OFF"
+                                        };
                                         println!("{} {}", status, manifest.path.display());
                                     }
                                 }
@@ -301,7 +369,7 @@ mod tests {
         let lines: Vec<String> = vec![
             "# apiVersion: argoproj.io/v1alpha1".to_string(),
             "# kind: Application".to_string(),
-            "  # metadata:".to_string(), // Keep this as is if it's not starting with # 
+            "  # metadata:".to_string(), // Keep this as is if it's not starting with #
             "#   name: app".to_string(),
         ];
         // Note: the current logic strips leading "# " or "#"
