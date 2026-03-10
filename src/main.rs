@@ -53,6 +53,7 @@ struct ManifestFile {
     env: Env,
     is_active: bool,
     source_path: Option<String>,
+    project_name: String,
     lines: Vec<String>,
 }
 
@@ -149,23 +150,30 @@ fn process_file(path: &std::path::Path) -> Option<ManifestFile> {
     // Determine environment based on the path structure first
     // E.g. /envs/staging/ or /tequila-workloads/staging/
     let mut env = Env::Unknown;
+    let mut project_name = None;
 
     // We split path components to specifically look for 'staging', 'stg', 'production', 'prod' directories
     // We check from the end of the path backwards (closest folder rules)
     let components: Vec<_> = path.components().collect();
-    for comp in components.iter().rev() {
+    for (i, comp) in components.iter().enumerate().rev() {
         if let std::path::Component::Normal(os_str) = comp {
             let s = os_str.to_string_lossy().to_lowercase();
-            if s == "staging" || s == "stg" {
-                env = Env::Staging;
-                break;
-            } else if s == "production"
-                || s == "prod"
-                || s.starts_with("prod-")
-                || s.starts_with("production-")
-            {
-                // adding prod-v1-32 heuristic based on user input
-                env = Env::Prod;
+            let is_stg = s == "staging" || s == "stg";
+            let is_prod = s == "production" || s == "prod" || s.starts_with("prod-") || s.starts_with("production-");
+            
+            if is_stg || is_prod {
+                env = if is_stg { Env::Staging } else { Env::Prod };
+                
+                // Try to get max 1 level up for project name
+                if i > 0 {
+                    if let std::path::Component::Normal(p) = &components[i - 1] {
+                        let pn = p.to_string_lossy().to_string();
+                        let generic_dirs = ["envs", "teams", "apps", "work", "workloads", "k8s", "kubernetes", "chart", "charts", "projects", "tequila-workloads"];
+                        if !generic_dirs.contains(&pn.to_lowercase().as_str()) && !pn.starts_with('.') {
+                            project_name = Some(pn);
+                        }
+                    }
+                }
                 break;
             }
         }
@@ -195,12 +203,17 @@ fn process_file(path: &std::path::Path) -> Option<ManifestFile> {
         }
     }
 
+    let final_project_name = project_name.unwrap_or_else(|| {
+        path.file_stem().unwrap_or_default().to_string_lossy().to_string()
+    });
+
     Some(ManifestFile {
         path: path.to_path_buf(),
         kind,
         env,
         is_active,
         source_path,
+        project_name: final_project_name,
         lines,
     })
 }
@@ -262,12 +275,7 @@ fn main() {
     let mut groups_map: HashMap<(Env, String), ManifestGroup> = HashMap::new();
 
     for manifest in manifests {
-        let stem = manifest
-            .path
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
+        let stem = manifest.project_name.clone();
         let key = (manifest.env.clone(), stem.clone());
         let entry = groups_map
             .entry(key.clone())
@@ -307,6 +315,7 @@ fn main() {
                                         env: key.0.clone(), // inherit the environment from the parent Application
                                         is_active: is_inner_active,
                                         source_path: None,
+                                        project_name: key.1.clone(),
                                         lines: inner_lines,
                                     });
                                 }
