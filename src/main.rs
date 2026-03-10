@@ -1,5 +1,6 @@
 use clap::Parser;
-use inquire::{MultiSelect, Select};
+use inquire::{Confirm, Select};
+use std::collections::HashMap;
 use std::fmt;
 use std::fs;
 use std::path::PathBuf;
@@ -52,8 +53,6 @@ impl fmt::Display for ManifestFile {
         write!(f, "{} {} - {}", env_str, kind_str, file_name)
     }
 }
-
-use std::collections::HashMap;
 
 #[derive(Clone, Debug)]
 struct ManifestGroup {
@@ -343,69 +342,58 @@ fn main() {
         Env::Unknown => 3,
     });
 
-    let env_ans = Select::new(
-        "Which environment do you want to manage?",
-        env_options.clone(),
-    )
-    .prompt();
+    let env_ans = Select::new("Which environment do you want to manage?", env_options.clone()).prompt();
 
     match env_ans {
         Ok(selected_env_opt) => {
             let env = selected_env_opt.env;
-            if let Some(env_groups) = env_map.get(&env) {
-                let mut default_selection = Vec::new();
-                for (i, g) in env_groups.iter().enumerate() {
-                    if !g.is_active {
-                        default_selection.push(i);
-                    }
-                }
-
-                let app_ans = MultiSelect::new(
-                    "Select deployments to turn OFF (checked = OFF, unchecked = ON):",
-                    env_groups.clone(),
+            if let Some(mut env_groups) = env_map.remove(&env) {
+                // Sort the groups inside the environment alphabetically
+                env_groups.sort_by(|a, b| a.name.cmp(&b.name));
+                
+                let app_ans = Select::new(
+                    "Which project name?",
+                    env_groups,
                 )
-                .with_default(&default_selection)
                 .prompt();
 
                 match app_ans {
-                    Ok(selections) => {
-                        let selected_names: Vec<_> = selections.iter().map(|s| &s.name).collect();
-
-                        for group in env_groups {
-                            let should_be_off = selected_names.contains(&&group.name);
-                            let should_be_active = !should_be_off;
-
-                            for manifest in &group.files {
-                                if should_be_active != manifest.is_active
-                                    || group.is_active != should_be_active
-                                {
-                                    let new_lines = toggle_lines(&manifest.lines, should_be_active);
-                                    let new_content = new_lines.join("\n") + "\n";
-
-                                    if let Err(e) = fs::write(&manifest.path, new_content) {
-                                        eprintln!(
-                                            "Failed to write to {}: {}",
-                                            manifest.path.display(),
-                                            e
-                                        );
-                                    } else {
-                                        let status = if should_be_active {
-                                            "Turned ON"
+                    Ok(selected_group) => {
+                        let current_state_str = if selected_group.is_active { "ON" } else { "OFF" };
+                        let opposite_state = !selected_group.is_active;
+                        let opposite_state_str = if opposite_state { "ON" } else { "OFF" };
+                        
+                        let confirm_prompt = format!("Current state is {}. Do you want to turn it {} rn?", current_state_str, opposite_state_str);
+                        let confirm_ans = Confirm::new(&confirm_prompt)
+                            .with_default(true)
+                            .prompt();
+                            
+                        match confirm_ans {
+                            Ok(true) => {
+                                for manifest in &selected_group.files {
+                                    if opposite_state != manifest.is_active || selected_group.is_active != opposite_state {
+                                        let new_lines = toggle_lines(&manifest.lines, opposite_state);
+                                        let new_content = new_lines.join("\n") + "\n";
+                                        
+                                        if let Err(e) = fs::write(&manifest.path, new_content) {
+                                            eprintln!("Failed to write to {}: {}", manifest.path.display(), e);
                                         } else {
-                                            "Turned OFF"
-                                        };
-                                        println!("{} {}", status, manifest.path.display());
+                                            let status = if opposite_state { "Turned ON" } else { "Turned OFF" };
+                                            println!("{} {}", status, manifest.path.display());
+                                        }
                                     }
                                 }
+                                println!("Done!");
                             }
+                            Ok(false) => println!("Operation canceled."),
+                            Err(_) => println!("Error or canceled."),
                         }
-                        println!("Done!");
                     }
-                    Err(e) => println!("Error or canceled: {}", e),
+                    Err(_) => println!("Error or canceled."),
                 }
             }
         }
-        Err(e) => println!("Error or canceled: {}", e),
+        Err(_) => println!("Error or canceled."),
     }
 }
 
