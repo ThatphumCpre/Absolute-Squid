@@ -220,8 +220,9 @@ fn main() {
         return;
     }
 
-    // Group the manifests by file stem (base name)
-    let mut groups_map: HashMap<String, ManifestGroup> = HashMap::new();
+    // Group the manifests by Environment AND file stem (base name)
+    // This prevents a Staging `seer-api` and a Prod `seer-api` from being grouped together
+    let mut groups_map: HashMap<(Env, String), ManifestGroup> = HashMap::new();
 
     for manifest in manifests {
         let stem = manifest
@@ -230,14 +231,13 @@ fn main() {
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
-        let entry = groups_map
-            .entry(stem.clone())
-            .or_insert_with(|| ManifestGroup {
-                name: stem,
-                env: manifest.env.clone(),
-                is_active: true, // we'll update this
-                files: Vec::new(),
-            });
+        let key = (manifest.env.clone(), stem.clone());
+        let entry = groups_map.entry(key).or_insert_with(|| ManifestGroup {
+            name: stem,
+            env: manifest.env.clone(),
+            is_active: true, // we'll update this
+            files: Vec::new(),
+        });
 
         entry.files.push(manifest);
     }
