@@ -1,0 +1,12 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: staging-web-project
+  namespace: argocd
+spec:
+  description: "Staging web project"
+  sourceRepos:
+    - "*"
+  destinations:
+    - namespace: staging
+      server: https://kubernetes.default.svc

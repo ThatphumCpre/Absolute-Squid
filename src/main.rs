@@ -52,6 +52,29 @@ impl fmt::Display for ManifestFile {
     }
 }
 
+use std::collections::HashMap;
+
+#[derive(Clone, Debug)]
+struct ManifestGroup {
+    name: String,
+    env: Env,
+    is_active: bool,
+    files: Vec<ManifestFile>,
+}
+
+impl fmt::Display for ManifestGroup {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let env_str = match self.env {
+            Env::Staging => "[STG]",
+            Env::Prod => "[PRD]",
+            Env::Unknown => "[???]",
+        };
+        let file_count = self.files.len();
+        let s = if file_count == 1 { "" } else { "s" };
+        write!(f, "{} {} ({} file{})", env_str, self.name, file_count, s)
+    }
+}
+
 fn process_file(path: &std::path::Path) -> Option<ManifestFile> {
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
@@ -153,36 +176,63 @@ fn main() {
         return;
     }
 
-    // pre-select indices for active files
+    // Group the manifests by file stem (base name)
+    let mut groups_map: HashMap<String, ManifestGroup> = HashMap::new();
+
+    for manifest in manifests {
+        let stem = manifest.path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+        let entry = groups_map.entry(stem.clone()).or_insert_with(|| ManifestGroup {
+            name: stem,
+            env: manifest.env.clone(),
+            is_active: true, // we'll update this
+            files: Vec::new(),
+        });
+        
+        entry.files.push(manifest);
+    }
+
+    let mut groups: Vec<ManifestGroup> = groups_map.into_values().map(|mut g| {
+        // A group is considered active only if ALL its manifests are active.
+        // If some are off, we treat the group as off.
+        g.is_active = g.files.iter().all(|m| m.is_active);
+        g
+    }).collect();
+
+    // Sort groups for stable output
+    groups.sort_by(|a, b| a.name.cmp(&b.name));
+
+    // pre-select indices for active groups
     let mut default_selection = Vec::new();
-    for (i, m) in manifests.iter().enumerate() {
-        if m.is_active {
+    for (i, g) in groups.iter().enumerate() {
+        if g.is_active {
             default_selection.push(i);
         }
     }
-
-    let options = manifests.clone();
     
-    let ans = MultiSelect::new("Turn on/off Staging & Prod deployments:", options)
+    let ans = MultiSelect::new("Turn on/off Staging & Prod deployments:", groups.clone())
         .with_default(&default_selection)
         .prompt();
 
     match ans {
         Ok(selections) => {
-            let selected_paths: Vec<_> = selections.iter().map(|s| &s.path).collect();
+            let selected_names: Vec<_> = selections.iter().map(|s| &s.name).collect();
             
-            for manifest in &manifests {
-                let should_be_active = selected_paths.contains(&&manifest.path);
+            for group in &groups {
+                let should_be_active = selected_names.contains(&&group.name);
                 
-                if should_be_active != manifest.is_active {
-                    let new_lines = toggle_lines(&manifest.lines, should_be_active);
-                    let new_content = new_lines.join("\n") + "\n";
-                    
-                    if let Err(e) = fs::write(&manifest.path, new_content) {
-                        eprintln!("Failed to write to {}: {}", manifest.path.display(), e);
-                    } else {
-                        let status = if should_be_active { "Turned ON" } else { "Turned OFF" };
-                        println!("{} {}", status, manifest.path.display());
+                // if we toggle the group on, turn ALL inner manifests on
+                // if we toggle the group off, turn ALL inner manifests off
+                for manifest in &group.files {
+                    if should_be_active != manifest.is_active || group.is_active != should_be_active {
+                        let new_lines = toggle_lines(&manifest.lines, should_be_active);
+                        let new_content = new_lines.join("\n") + "\n";
+                        
+                        if let Err(e) = fs::write(&manifest.path, new_content) {
+                            eprintln!("Failed to write to {}: {}", manifest.path.display(), e);
+                        } else {
+                            let status = if should_be_active { "Turned ON" } else { "Turned OFF" };
+                            println!("{} {}", status, manifest.path.display());
+                        }
                     }
                 }
             }
