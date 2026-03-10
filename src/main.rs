@@ -32,6 +32,7 @@ struct ManifestFile {
     kind: Kind,
     env: Env,
     is_active: bool,
+    source_path: Option<String>,
     lines: Vec<String>,
 }
 
@@ -86,6 +87,7 @@ fn process_file(path: &std::path::Path) -> Option<ManifestFile> {
     let mut kind = Kind::Unknown;
     let mut is_active = false;
     let mut is_argo = false;
+    let mut source_path = None;
 
     for line in &lines {
         let trimmed = line.trim();
@@ -102,6 +104,12 @@ fn process_file(path: &std::path::Path) -> Option<ManifestFile> {
             is_argo = true;
             if !trimmed.starts_with('#') {
                 is_active = true;
+            }
+        } else if un_commented.starts_with("path:") {
+            // Attempt to capture the path: field under spec.source
+            let parts: Vec<&str> = un_commented.splitn(2, ':').collect();
+            if parts.len() == 2 {
+                source_path = Some(parts[1].trim().to_string());
             }
         }
     }
@@ -165,6 +173,7 @@ fn process_file(path: &std::path::Path) -> Option<ManifestFile> {
         kind,
         env,
         is_active,
+        source_path,
         lines,
     })
 }
@@ -232,14 +241,54 @@ fn main() {
             .to_string_lossy()
             .to_string();
         let key = (manifest.env.clone(), stem.clone());
-        let entry = groups_map.entry(key).or_insert_with(|| ManifestGroup {
-            name: stem,
-            env: manifest.env.clone(),
-            is_active: true, // we'll update this
-            files: Vec::new(),
-        });
+        let entry = groups_map
+            .entry(key.clone())
+            .or_insert_with(|| ManifestGroup {
+                name: stem,
+                env: manifest.env.clone(),
+                is_active: true, // we'll update this
+                files: Vec::new(),
+            });
 
+        let path_to_scan = manifest.source_path.clone();
+        let manifest_is_active = manifest.is_active;
         entry.files.push(manifest);
+
+        // If this is an Application and specifies a path, scan that target path too!
+        if let Some(target_path_str) = path_to_scan {
+            let target_dir = args.path.join(target_path_str);
+            if target_dir.is_dir() {
+                for inner_entry in WalkDir::new(&target_dir).into_iter().filter_map(|e| e.ok()) {
+                    let inner_path = inner_entry.path();
+                    if inner_path.is_file() {
+                        if let Some(inner_ext) = inner_path.extension() {
+                            if inner_ext == "yaml" || inner_ext == "yml" {
+                                if let Ok(inner_content) = fs::read_to_string(inner_path) {
+                                    // Treat these associated files as active/inactive based on the application's state,
+                                    // or infer it locally. For simplicity, we just parse it lightly
+                                    // to wrap it in a ManifestFile object to be toggled.
+                                    let inner_lines: Vec<String> =
+                                        inner_content.lines().map(|s| s.to_string()).collect();
+
+                                    let is_inner_active = !inner_lines
+                                        .iter()
+                                        .all(|l| l.trim().is_empty() || l.starts_with('#'));
+
+                                    entry.files.push(ManifestFile {
+                                        path: inner_path.to_path_buf(),
+                                        kind: Kind::Unknown,
+                                        env: key.0.clone(), // inherit the environment from the parent Application
+                                        is_active: is_inner_active,
+                                        source_path: None,
+                                        lines: inner_lines,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     let mut groups: Vec<ManifestGroup> = groups_map
