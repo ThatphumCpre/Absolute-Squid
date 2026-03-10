@@ -1,5 +1,5 @@
 use clap::Parser;
-use inquire::MultiSelect;
+use inquire::{MultiSelect, Select};
 use std::fmt;
 use std::fs;
 use std::path::PathBuf;
@@ -240,44 +240,53 @@ fn main() {
         Env::Unknown => 3,
     });
 
-    // pre-select indices for OFF environments
-    let mut default_selection = Vec::new();
-    for (i, opt) in env_options.iter().enumerate() {
-        if !opt.is_all_active {
-            default_selection.push(i);
-        }
-    }
-    
-    let ans = MultiSelect::new("Select environments to turn OFF (checked = OFF, unchecked = ON):", env_options.clone())
-        .with_default(&default_selection)
-        .prompt();
+    let env_ans = Select::new("Which environment do you want to manage?", env_options.clone()).prompt();
 
-    match ans {
-        Ok(selections) => {
-            let selected_envs: Vec<_> = selections.iter().map(|s| &s.env).collect();
-            
-            for (env, env_groups) in &env_map {
-                let should_be_off = selected_envs.contains(&env);
-                let should_be_active = !should_be_off;
-                
-                for group in env_groups {
-                    for manifest in &group.files {
-                        // We toggle if the manifest state doesn't match the desired env state
-                        if should_be_active != manifest.is_active {
-                            let new_lines = toggle_lines(&manifest.lines, should_be_active);
-                            let new_content = new_lines.join("\n") + "\n";
-                            
-                            if let Err(e) = fs::write(&manifest.path, new_content) {
-                                eprintln!("Failed to write to {}: {}", manifest.path.display(), e);
-                            } else {
-                                let status = if should_be_active { "Turned ON" } else { "Turned OFF" };
-                                println!("{} {}", status, manifest.path.display());
-                            }
-                        }
+    match env_ans {
+        Ok(selected_env_opt) => {
+            let env = selected_env_opt.env;
+            if let Some(env_groups) = env_map.get(&env) {
+                let mut default_selection = Vec::new();
+                for (i, g) in env_groups.iter().enumerate() {
+                    if !g.is_active {
+                        default_selection.push(i);
                     }
                 }
+
+                let app_ans = MultiSelect::new(
+                    "Select deployments to turn OFF (checked = OFF, unchecked = ON):",
+                    env_groups.clone(),
+                )
+                .with_default(&default_selection)
+                .prompt();
+
+                match app_ans {
+                    Ok(selections) => {
+                        let selected_names: Vec<_> = selections.iter().map(|s| &s.name).collect();
+                        
+                        for group in env_groups {
+                            let should_be_off = selected_names.contains(&&group.name);
+                            let should_be_active = !should_be_off;
+                            
+                            for manifest in &group.files {
+                                if should_be_active != manifest.is_active || group.is_active != should_be_active {
+                                    let new_lines = toggle_lines(&manifest.lines, should_be_active);
+                                    let new_content = new_lines.join("\n") + "\n";
+                                    
+                                    if let Err(e) = fs::write(&manifest.path, new_content) {
+                                        eprintln!("Failed to write to {}: {}", manifest.path.display(), e);
+                                    } else {
+                                        let status = if should_be_active { "Turned ON" } else { "Turned OFF" };
+                                        println!("{} {}", status, manifest.path.display());
+                                    }
+                                }
+                            }
+                        }
+                        println!("Done!");
+                    }
+                    Err(e) => println!("Error or canceled: {}", e),
+                }
             }
-            println!("Done!");
         }
         Err(e) => println!("Error or canceled: {}", e),
     }
