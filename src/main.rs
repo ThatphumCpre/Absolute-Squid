@@ -342,54 +342,103 @@ fn main() {
         Env::Unknown => 3,
     });
 
-    let env_ans = Select::new("Which environment do you want to manage?", env_options.clone()).prompt();
+    let env_ans = Select::new(
+        "Which environment do you want to manage?",
+        env_options.clone(),
+    )
+    .prompt();
 
     match env_ans {
         Ok(selected_env_opt) => {
-            let env = selected_env_opt.env;
+            let env = selected_env_opt.env.clone();
             if let Some(mut env_groups) = env_map.remove(&env) {
                 // Sort the groups inside the environment alphabetically
                 env_groups.sort_by(|a, b| a.name.cmp(&b.name));
-                
-                let app_ans = Select::new(
-                    "Which project name?",
-                    env_groups,
-                )
-                .prompt();
 
-                match app_ans {
-                    Ok(selected_group) => {
-                        let current_state_str = if selected_group.is_active { "ON" } else { "OFF" };
-                        let opposite_state = !selected_group.is_active;
-                        let opposite_state_str = if opposite_state { "ON" } else { "OFF" };
-                        
-                        let confirm_prompt = format!("Current state is {}. Do you want to turn it {} rn?", current_state_str, opposite_state_str);
-                        let confirm_ans = Confirm::new(&confirm_prompt)
-                            .with_default(true)
-                            .prompt();
-                            
-                        match confirm_ans {
-                            Ok(true) => {
-                                for manifest in &selected_group.files {
-                                    if opposite_state != manifest.is_active || selected_group.is_active != opposite_state {
-                                        let new_lines = toggle_lines(&manifest.lines, opposite_state);
-                                        let new_content = new_lines.join("\n") + "\n";
-                                        
-                                        if let Err(e) = fs::write(&manifest.path, new_content) {
-                                            eprintln!("Failed to write to {}: {}", manifest.path.display(), e);
-                                        } else {
-                                            let status = if opposite_state { "Turned ON" } else { "Turned OFF" };
-                                            println!("{} {}", status, manifest.path.display());
+                loop {
+                    // Recompute string representations to show fresh state
+                    let mut options = Vec::new();
+                    for g in &env_groups {
+                        let state = if g.is_active { "[ON]" } else { "[OFF]" };
+                        options.push(format!("{} - {}", state, g.name));
+                    }
+                    options.push("== Exit / Done ==".to_string());
+
+                    let app_ans = Select::new("Which project name?", options.clone()).prompt();
+
+                    match app_ans {
+                        Ok(selected_str) => {
+                            if selected_str == "== Exit / Done ==" {
+                                println!("Finished managing {}.", selected_env_opt);
+                                break;
+                            }
+
+                            // Find the matching group
+                            let index = options.iter().position(|r| r == &selected_str).unwrap();
+                            let selected_group = &mut env_groups[index];
+
+                            let current_state_str = if selected_group.is_active {
+                                "ON"
+                            } else {
+                                "OFF"
+                            };
+                            let opposite_state = !selected_group.is_active;
+                            let opposite_state_str = if opposite_state { "ON" } else { "OFF" };
+
+                            let confirm_prompt = format!(
+                                "Current state is {}. Do you want to turn it {} rn?",
+                                current_state_str, opposite_state_str
+                            );
+                            let confirm_ans =
+                                Confirm::new(&confirm_prompt).with_default(true).prompt();
+
+                            match confirm_ans {
+                                Ok(true) => {
+                                    for manifest in &mut selected_group.files {
+                                        if opposite_state != manifest.is_active
+                                            || selected_group.is_active != opposite_state
+                                        {
+                                            let new_lines =
+                                                toggle_lines(&manifest.lines, opposite_state);
+                                            let new_content = new_lines.join("\n") + "\n";
+
+                                            if let Err(e) = fs::write(&manifest.path, new_content) {
+                                                eprintln!(
+                                                    "Failed to write to {}: {}",
+                                                    manifest.path.display(),
+                                                    e
+                                                );
+                                            } else {
+                                                let status = if opposite_state {
+                                                    "Turned ON"
+                                                } else {
+                                                    "Turned OFF"
+                                                };
+                                                println!("{} {}", status, manifest.path.display());
+                                                manifest.is_active = opposite_state;
+                                                manifest.lines = new_lines;
+                                            }
                                         }
                                     }
+                                    selected_group.is_active = opposite_state;
+                                    println!("Done toggling {}!", selected_group.name);
+                                    println!("--------------------------------------------------");
                                 }
-                                println!("Done!");
+                                Ok(false) => {
+                                    println!("Operation canceled.");
+                                    println!("--------------------------------------------------");
+                                }
+                                Err(_) => {
+                                    println!("Error or canceled.");
+                                    break;
+                                }
                             }
-                            Ok(false) => println!("Operation canceled."),
-                            Err(_) => println!("Error or canceled."),
+                        }
+                        Err(_) => {
+                            println!("Error or canceled.");
+                            break;
                         }
                     }
-                    Err(_) => println!("Error or canceled."),
                 }
             }
         }
