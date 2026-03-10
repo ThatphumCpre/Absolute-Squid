@@ -1,14 +1,15 @@
 # Absolute Squid
 
-`absolute-squid` is an interactive CLI tool built in Rust to easily manage and toggle ArgoCD `Application` and `AppProject` manifests. It scans your local directory for ArgoCD YAMLs, identifies whether they belong to Staging or Production environments, and provides an interactive menu to turn them "on" or "off".
+`absolute-squid` is an interactive CLI tool built in Rust to easily manage and toggle Kubernetes manifests, including ArgoCD `Application`s, `AppProject`s, and autoscalers (`HorizontalPodAutoscaler`, `ScaledObject`). It scans your local directory for these manifests, identifies their target environments, and groups them by application name. It provides an intuitive nested interactive menu to turn environments and applications "ON", "OFF", or "SEMI" (partially active).
 
-When an application is turned off, the CLI automatically comments out all lines in the pertinent `.yaml` or `.yml` file. When turned on, it uncomment all the lines, restoring the manifest.
+When an application is turned off, the CLI automatically comments out all lines in the pertinent `.yaml` or `.yml` files. When turned on, it uncomments all the lines, restoring the manifest.
 
 ## Features
 - **Directory Scanning**: Recursively scans any given directory (defaults to `.`) for `.yaml` or `.yml` files.
-- **ArgoCD Manifest Detection**: Identifies `Application` and `AppProject` kinds, even if they are currently commented out.
-- **Environment Classification**: Identifies whether a manifest is for `Staging` or `Production` by looking at the filename and content.
-- **Interactive Toggling**: Uses an interactive multi-select menu to display current states and allow you to quickly turn components on or off.
+- **Manifest Detection**: Identifies `Application`, `AppProject`, and autoscale kinds (`HorizontalPodAutoscaler`, `ScaledObject`), even if they are currently commented out.
+- **Environment Classification**: Identifies whether a manifest is for `Staging` or `Production` by looking at the directory structure and filename.
+- **Group Toggling & SEMI State**: Groups applications and their corresponding autoscalers together. Supports `[ON]`, `[OFF]`, and a `[SEMI]` state (e.g., app is active but autoscaler is commented out).
+- **Interactive Nested Menus**: Multi-level menus let you first select an environment, then interactively toggle specific application groups.
 - **Smart Formatting**: Comments and uncomments lines robustly without destroying original indentation logic.
 
 ## Installation
@@ -51,17 +52,35 @@ absolute-squid .
 
 ### Interactive Menu
 
-When you run the tool, you will see an interactive prompt:
+When you run the tool, you will see an interactive prompt that first asks for the environment:
 
 ```text
-? Turn on/off Staging & Prod deployments:
-> [x] [STG] App - staging-app.yaml
-  [ ] [PRD] Proj - prod-project.yml
+? Which environment do you want to manage?
+> Staging Environment (1 app)
+  Production Environment (1 app)
 ```
 
-- Use the **Up/Down arrow keys** to navigate.
-- Use **Space** to toggle a deployment on (checked) or off (unchecked).
-- Press **Enter** to confirm your selection.
+After selecting an environment, you will see a list of application groups and their states:
+
+```text
+? Which project name?
+> [SEMI] - staging-web
+  [ON] - some-other-app
+  == Exit / Done ==
+```
+
+Selecting an application will let you choose its new state:
+
+```text
+? Current state is [SEMI]. What do you want to do rn?
+> Turn ON
+  Turn OFF
+  Cancel
+```
+
+- **Turn ON**: Uncomments all associated manifests (Application, AppProject, Autoscalers).
+- **Turn OFF**: Comments out all associated manifests.
+- **Turn SEMI**: Uncomments the main Application/AppProject but comments out the Autoscalers.
 
 The files will automatically be updated (uncommented/commented) on disk based on your selection.
 

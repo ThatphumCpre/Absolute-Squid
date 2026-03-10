@@ -1,5 +1,5 @@
 use clap::Parser;
-use inquire::{Confirm, Select};
+use inquire::Select;
 use std::collections::HashMap;
 use std::fmt;
 use std::fs;
@@ -24,7 +24,25 @@ enum Env {
 enum Kind {
     Application,
     AppProject,
+    Autoscale,
     Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum GroupState {
+    On,
+    Off,
+    Semi,
+}
+
+impl fmt::Display for GroupState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            GroupState::On => write!(f, "[ON]"),
+            GroupState::Off => write!(f, "[OFF]"),
+            GroupState::Semi => write!(f, "[SEMI]"),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -47,6 +65,7 @@ impl fmt::Display for ManifestFile {
         let kind_str = match self.kind {
             Kind::Application => "App",
             Kind::AppProject => "Proj",
+            Kind::Autoscale => "Auto",
             Kind::Unknown => "???",
         };
         let file_name = self.path.file_name().unwrap_or_default().to_string_lossy();
@@ -58,7 +77,7 @@ impl fmt::Display for ManifestFile {
 struct ManifestGroup {
     name: String,
     env: Env,
-    is_active: bool,
+    state: GroupState,
     files: Vec<ManifestFile>,
 }
 
@@ -104,6 +123,15 @@ fn process_file(path: &std::path::Path) -> Option<ManifestFile> {
             if !trimmed.starts_with('#') {
                 is_active = true;
             }
+        } else if un_commented.to_lowercase().starts_with("kind: horizontalpodautoscaler")
+            || un_commented.to_lowercase().starts_with("kind: scaledobject")
+            || un_commented.to_lowercase().starts_with("kind: autoscale")
+        {
+            kind = Kind::Autoscale;
+            is_argo = true;
+            if !trimmed.starts_with('#') {
+                is_active = true;
+            }
         } else if un_commented.starts_with("path:") {
             // Attempt to capture the path: field under spec.source
             let parts: Vec<&str> = un_commented.splitn(2, ':').collect();
@@ -120,7 +148,6 @@ fn process_file(path: &std::path::Path) -> Option<ManifestFile> {
     // Determine environment based on the path structure first
     // E.g. /envs/staging/ or /tequila-workloads/staging/
     let mut env = Env::Unknown;
-    let path_str_lower = path.to_string_lossy().to_lowercase();
 
     // We split path components to specifically look for 'staging', 'stg', 'production', 'prod' directories
     // We check from the end of the path backwards (closest folder rules)
@@ -245,12 +272,11 @@ fn main() {
             .or_insert_with(|| ManifestGroup {
                 name: stem,
                 env: manifest.env.clone(),
-                is_active: true, // we'll update this
+                state: GroupState::Off, // we'll update this
                 files: Vec::new(),
             });
 
         let path_to_scan = manifest.source_path.clone();
-        let manifest_is_active = manifest.is_active;
         entry.files.push(manifest);
 
         // If this is an Application and specifies a path, scan that target path too!
@@ -290,12 +316,22 @@ fn main() {
         }
     }
 
-    let mut groups: Vec<ManifestGroup> = groups_map
+    let groups: Vec<ManifestGroup> = groups_map
         .into_values()
         .map(|mut g| {
-            // A group is considered active only if ALL its manifests are active.
-            // If some are off, we treat the group as off.
-            g.is_active = g.files.iter().all(|m| m.is_active);
+            // A group is considered ON if ALL its manifests are active.
+            // If some are active but not all, it is SEMI.
+            // If all are inactive, it is OFF.
+            let any_on = g.files.iter().any(|m| m.is_active);
+            let all_on = g.files.iter().all(|m| m.is_active);
+
+            g.state = if all_on {
+                GroupState::On
+            } else if any_on {
+                GroupState::Semi
+            } else {
+                GroupState::Off
+            };
             g
         })
         .collect();
@@ -327,7 +363,7 @@ fn main() {
 
     let mut env_options = Vec::new();
     for (env, env_groups) in &env_map {
-        let is_all_active = env_groups.iter().all(|g| g.is_active);
+        let is_all_active = env_groups.iter().all(|g| g.state == GroupState::On);
         env_options.push(EnvOption {
             env: env.clone(),
             is_all_active,
@@ -359,8 +395,7 @@ fn main() {
                     // Recompute string representations to show fresh state
                     let mut options = Vec::new();
                     for g in &env_groups {
-                        let state = if g.is_active { "[ON]" } else { "[OFF]" };
-                        options.push(format!("{} - {}", state, g.name));
+                        options.push(format!("{} - {}", g.state, g.name));
                     }
                     options.push("== Exit / Done ==".to_string());
 
@@ -377,55 +412,69 @@ fn main() {
                             let index = options.iter().position(|r| r == &selected_str).unwrap();
                             let selected_group = &mut env_groups[index];
 
-                            let current_state_str = if selected_group.is_active {
-                                "ON"
-                            } else {
-                                "OFF"
+                            let actions = match selected_group.state {
+                                GroupState::On => vec!["Turn OFF", "Turn SEMI", "Cancel"],
+                                GroupState::Off => vec!["Turn ON", "Turn SEMI", "Cancel"],
+                                GroupState::Semi => vec!["Turn ON", "Turn OFF", "Cancel"],
                             };
-                            let opposite_state = !selected_group.is_active;
-                            let opposite_state_str = if opposite_state { "ON" } else { "OFF" };
 
                             let confirm_prompt = format!(
-                                "Current state is {}. Do you want to turn it {} rn?",
-                                current_state_str, opposite_state_str
+                                "Current state is {}. What do you want to do rn?",
+                                selected_group.state
                             );
-                            let confirm_ans =
-                                Confirm::new(&confirm_prompt).with_default(true).prompt();
+                            let action_ans = Select::new(&confirm_prompt, actions).prompt();
 
-                            match confirm_ans {
-                                Ok(true) => {
+                            match action_ans {
+                                Ok(action) => {
+                                    if action == "Cancel" {
+                                        println!("Operation canceled.");
+                                        println!("--------------------------------------------------");
+                                        continue;
+                                    }
+
+                                    let target_app_state;
+                                    let target_auto_state;
+
+                                    if action.starts_with("Turn ON") {
+                                        target_app_state = true;
+                                        target_auto_state = true;
+                                    } else if action.starts_with("Turn OFF") {
+                                        target_app_state = false;
+                                        target_auto_state = false;
+                                    } else {
+                                        // SEMI
+                                        target_app_state = true;
+                                        target_auto_state = false;
+                                    }
+
                                     for manifest in &mut selected_group.files {
-                                        if opposite_state != manifest.is_active
-                                            || selected_group.is_active != opposite_state
-                                        {
-                                            let new_lines =
-                                                toggle_lines(&manifest.lines, opposite_state);
+                                        let target_state = if manifest.kind == Kind::Autoscale { target_auto_state } else { target_app_state };
+                                        if manifest.is_active != target_state {
+                                            let new_lines = toggle_lines(&manifest.lines, target_state);
                                             let new_content = new_lines.join("\n") + "\n";
-
                                             if let Err(e) = fs::write(&manifest.path, new_content) {
-                                                eprintln!(
-                                                    "Failed to write to {}: {}",
-                                                    manifest.path.display(),
-                                                    e
-                                                );
+                                                eprintln!("Failed to write to {}: {}", manifest.path.display(), e);
                                             } else {
-                                                let status = if opposite_state {
-                                                    "Turned ON"
-                                                } else {
-                                                    "Turned OFF"
-                                                };
+                                                let status = if target_state { "Turned ON" } else { "Turned OFF" };
                                                 println!("{} {}", status, manifest.path.display());
-                                                manifest.is_active = opposite_state;
+                                                manifest.is_active = target_state;
                                                 manifest.lines = new_lines;
                                             }
                                         }
                                     }
-                                    selected_group.is_active = opposite_state;
+
+                                    let any_on = selected_group.files.iter().any(|m| m.is_active);
+                                    let all_on = selected_group.files.iter().all(|m| m.is_active);
+
+                                    selected_group.state = if all_on {
+                                        GroupState::On
+                                    } else if any_on {
+                                        GroupState::Semi
+                                    } else {
+                                        GroupState::Off
+                                    };
+
                                     println!("Done toggling {}!", selected_group.name);
-                                    println!("--------------------------------------------------");
-                                }
-                                Ok(false) => {
-                                    println!("Operation canceled.");
                                     println!("--------------------------------------------------");
                                 }
                                 Err(_) => {
